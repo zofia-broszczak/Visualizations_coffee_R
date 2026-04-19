@@ -8,6 +8,7 @@ The analysis is based on a cleaned coffee quality dataset containing information
 
 ## Repository Structure
 .
+
 ├── data/
 
 │   └── merged_data_cleaned.csv
