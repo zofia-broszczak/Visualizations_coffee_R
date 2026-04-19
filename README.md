@@ -9,12 +9,18 @@ The analysis is based on a cleaned coffee quality dataset containing information
 ## Repository Structure
 .
 ├── data/
+
 │   └── merged_data_cleaned.csv
+
 ├── Final Presentation AdvVis in R - Visualizing coffee quality and sensory characteristics.pptx
+
 ├── README.md
+
 ├── Visualizing coffee quality and sensory characteristics.Rmd
+
 └── Visualizing-coffee-quality-and-sensory-characteristics.html
-Scope of the Analysis
+
+## Scope of the Analysis
 
 The project covers the following main sections:
 
