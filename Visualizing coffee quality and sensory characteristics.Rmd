@@ -1,0 +1,1545 @@
+
+title: "Visualizing coffee quality and sensory characteristics"
+author: "Zofia Broszczak and Anna Lorenz"
+date: "2026-01-12"
+output: html_document
+
+# Visualizing coffee quality and sensory characteristics
+
+## Zofia Broszczak (446277), Anna Lorenz (429840)
+### Advanced Visualization in R - Data Science and Business Analytics
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.path = "figs/"
+)
+
+knitr::opts_knit$set(root.dir = dirname(rstudioapi::getActiveDocumentContext()$path))
+dir.create("figs", showWarnings = FALSE)
+
+# Imports
+#install.packages("rnaturalearth")
+#install.packages("rnaturalearthdata")
+#install.packages("sf")
+#install.packages("circlize")
+
+library(tidyverse)
+library(naniar)
+library(ggplot2)
+library(GGally)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(countrycode)
+library(patchwork)
+library(nngeo)
+library(dplyr)
+library(gganimate)
+library(scales)
+library(circlize)
+```
+
+#### Color palettes
+We first create custom color palettes for our vizualizations - main_palette, green_palette, preference_palette and coffee_palette.
+```{r imports, message = FALSE}
+main_palette <- c("coffee" = "#6B4E3D",
+                   "raw_green" = "#006400",
+                   "muted_green" = "#1F4D3A",
+                   "golden" = "#E1C381",
+                   "dark" = "#4B3103",
+                   "darker" = "#342202",
+                   "cream" = "#DEDAC7",
+                   "latte" = "#FFFFE0",
+                   "roasted" = "#AF524E",
+                   "velvet" = "#8B2323",
+                   "caramel" = "#C49977")
+
+green_palette <- c("#F1F5F2",
+                   "#C8D9C1",
+                   "#8FB996",
+                   "#4F7F6A",
+                   "#1F4D3A")
+
+
+preference_palette <- c("#8B220D", 
+                        "#D08C82", 
+                        "#F0F1CC", 
+                        "#C8D0A7",
+                        "#4F7F6A",
+                        "#1F4D3A")
+
+coffee_palette <- c("Aroma" = "#6F4E37",
+                    "Flavor" = "#D2B48C",
+                    "Aftertaste" = "#A67B5B",
+                    "Acidity" = "#8B5A2B",
+                    "Body" = "#5C4033",
+                    "Balance" = "#3B2F2F")
+```
+
+# Introduction
+The following data analysis was conducted to explore a dataset containing different information about the quality of over 1300 coffee bean samples. 
+In this project, we focus on visualizing the data and finding relationships between variables. Our aim is to answer the following questions:
+
+1. What makes a good coffee?
+
+    1a. How is the coffee usually scored?
+    
+    1b. Which sensory attributes are most strongly associated with coffee quality?
+
+2. Which countries grow the best coffee?
+
+    2a. Interactive map of average coffee quality by country
+    
+    2b. Personalized coffee recomendations - Interactive map of average coffee quality by country for different flavor profiles
+
+3. How do processing methods affect coffee quality across top-producing countries?
+
+4. If we know what makes good coffee... what separates good from exceptional?
+
+    4a. Which processing methods survive higher quality standards?
+    
+    4b. What does an excceptional coffee look like as a profile?
+
+5. What gives exceptional coffee its advantage?
+
+    5a. Which sensory attributes drive exceptional quality?
+    
+    5b. What is the sensory fingerprint of exceptional coffee?
+
+# Dataset choice
+The dataset we chose is from Coffee Quality Institute and can be found on Kaggle: https://www.kaggle.com/datasets/volpatto/coffee-quality-database-from-cqi?select=merged_data_cleaned.csv. There are several datasets from the Coffee Quality Institute on Kaggle or GitHub, and we first considered one that was smaller, however, we chose the dataset linked above because it is the most robust as it contains a pre-cleaned dataset consisting of both Arabica and Robusta coffee data.
+
+# Data summary
+In this step, we are loading and familiarizing ourselves with the dataset.
+```{r load data}
+# Add the "data" folder with the "merged_data_clean.csv" file to the same folder as you have the .Rmd file
+data <- read.csv('data/merged_data_cleaned.csv')
+data <- tibble(data)
+head(data)
+```
+
+# Preprocessing
+Minor preprocessing is needed to make the data ready for the analysis and visualizations.
+
+#### Removing countries with too few observations (<=10)
+```{r preproc country, results='hide'}
+print(unique(data$Country.of.Origin))
+
+print(
+  data %>%
+    group_by(Country.of.Origin) %>%
+    summarise(count = n()) %>%
+    arrange(-count)
+)
+
+data <- data %>%
+ group_by(Country.of.Origin) %>%
+ filter(n() > 10) %>%
+ ungroup()
+```
+
+#### Coffee quality scores outliers
+```{r missing scores, results='hide'}
+print(data %>% filter(Aroma == 0))
+print(data %>% filter((Processing.Method == "")))
+
+data <- data %>% filter((Aroma != 0) & (!(Processing.Method == "")))
+```
+
+There is one significant outlier, which has all coffee quality scores equal to 0. Since it is most likely a mistake, we remove it from the data.
+
+#### Grading date recoding
+The grading dates are recorded as characters, so we process them to extract the dates and years.
+```{r grad date recode}
+new_dates <-  c()
+new_years <- c()
+
+for(date_string in data$Grading.Date){
+  # Extract the month, date and year
+  month <- strsplit(date_string, " ")[[1]][1]
+  day <- sub(".{3}$", "", strsplit(date_string, " ")[[1]][2])
+  year <- strsplit(date_string, " ")[[1]][3]
+  # Combine the extracted information
+  date_clean <- paste(year, "-", month, "-", day)
+  # Save the results in the corresponding lists
+  new_dates <- append(ymd(date_clean), new_dates)
+  new_years <- append(year, new_years)
+}
+
+# The date is now in a format suitable for time series analysis (YYYY-MM-DD)
+data$Grading.Date <- new_dates
+data$Grading.Year <- new_years
+```
+
+# Analysis
+
+## 1. What makes a good coffee?
+
+### 1a. How is the coffee usually scored - distribution of total scores
+```{r scores histogram, message = FALSE}
+# Summary statistics
+mu  <- mean(data$Total.Cup.Points, na.rm = TRUE)
+sdv <- sd(data$Total.Cup.Points, na.rm = TRUE)
+q95 <- quantile(data$Total.Cup.Points, probs = 0.95, na.rm = TRUE)
+
+p <- ggplot(data, aes(x = Total.Cup.Points)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    bins = 30,
+    fill = main_palette["caramel"],
+    color = "white",
+    alpha = 0.9
+  ) +
+  geom_density(color = main_palette["dark"], linewidth = 1) +
+  labs(
+    title = "Distribution of coffee ratings",
+    subtitle = "Exceptional coffees defined as the top 5% of the quality distribution",
+    x = "Total cup points",
+    y = "Density"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 16,
+      color = main_palette["darker"],
+      margin = margin(b = 6)
+    ),
+    plot.subtitle = element_text(
+      face = "bold",
+      size = 11,
+      color = main_palette["dark"],
+      margin = margin(b = 12)
+    ),
+    axis.title = element_text(
+      color = main_palette["darker"]
+    ),
+    axis.text = element_text(
+      color = main_palette["darker"]
+    ),
+    plot.margin = margin(12, 12, 12, 12)
+  ) +
+  coord_cartesian(clip = "off")
+
+y_top <- max(ggplot_build(p)$data[[1]]$density, na.rm = TRUE)
+
+p +
+  theme(plot.margin = margin(12, 12, 28, 12)) +
+  # Mean line
+  geom_segment(
+    x = mu, xend = mu,
+    y = 0, yend = y_top,
+    linewidth = 1.1,
+    color = main_palette["darker"]
+  ) +
+  # -1 SD line
+  geom_segment(
+    x = mu - sdv, xend = mu - sdv,
+    y = 0, yend = y_top,
+    linetype = "dashed",
+    color = main_palette["darker"]
+  ) +
+  # +1 SD line
+  geom_segment(
+    x = mu + sdv, xend = mu + sdv,
+    y = 0, yend = y_top,
+    linetype = "dashed",
+    color = main_palette["darker"]
+  ) +
+  # Top 5% cutoff line
+  geom_segment(
+    x = q95, xend = q95,
+    y = 0, yend = y_top,
+    color = main_palette["velvet"],
+    linewidth = 1
+  ) +
+  # Labels
+  annotate(
+    "text", x = mu - sdv, y = y_top * 1.07,
+    label = paste0("-1 SD = ", round(mu - sdv, 1)), size = 3.2,
+    color = main_palette["darker"], hjust = 1
+  ) +
+  annotate(
+    "text", x = mu, y = y_top * 1.07,
+    label = paste0("Mean = ", round(mu, 1)), size = 3.4,
+    color = main_palette["darker"], hjust = 0.5
+  ) +
+  annotate(
+    "text", x = mu + sdv, y = y_top * 1.07,
+    label = paste0("+1 SD = ", round(mu + sdv, 1)), size = 3.2,
+    color = main_palette["darker"], hjust = 0
+  ) +
+  annotate(
+    "text", x = q95, y = y_top * 0.55,
+    label = paste0("Exceptional (top 5%)\ncutoff = ", round(q95, 1)), size = 3.6,
+    color = main_palette["velvet"], hjust = -0.1
+  )
+```
+
+There are no bad coffees in this data which stems from the fact that the dataset consists of samples of certified specialty coffees. There are some good coffees with a rating ranging from 70 to 80. Most coffees are very good - the mean is 82 and most coffees have a rating of 83. As most exceptional coffees, we treat the coffees that got the top 5% of highest ratings.
+
+### 1b. Which sensory attributes are most strongly associated with coffee quality?
+In this section, we illustrate how strongly individual sensory attributes are related to the final coffee score (Total Cup Points), using Spearman correlations. The bars and their color show the direction and strength of each relationship, while stars indicate statistical significance. The error bars represent bootstrapped 95% confidence intervals - so that for each bootstrap resample, a correlation is calculated, and the space between the two vertical bars (|--|) represents the range that contains the middle 95% of those correlation values.
+```{r corr, message = FALSE}
+quality_measure_cols <- data %>%
+  select(Aroma,Flavor,Aftertaste,Acidity,Body,Balance,Uniformity,Clean.Cup,Sweetness,Moisture,Category.One.Defects,Category.Two.Defects) %>%
+  drop_na()
+
+cor_cols <- quality_measure_cols %>%
+  mutate(Total.Cup.Points = data$Total.Cup.Points)
+
+quality_measures_long <- cor_cols %>%
+  pivot_longer(
+    cols = -Total.Cup.Points,
+    names_to = "attribute",
+    values_to = "x"
+  )
+
+# Bootstrap confidence intervals for Spearman correlation
+boot_spearman <- function(x, y, B = 1000) {
+  n <- length(x)
+  stats <- replicate(B, {
+    idx <- sample.int(n, n, replace = TRUE)
+    suppressWarnings(cor(x[idx], y[idx], method = "spearman"))
+  })
+  quantile(stats, c(0.025, 0.975), na.rm = TRUE)
+}
+
+quality_measures_cor <- quality_measures_long %>%
+  group_by(attribute) %>%
+  summarise(
+    rho = cor(x, Total.Cup.Points, method = "spearman"),
+    p_value = suppressWarnings(cor.test(x, Total.Cup.Points, method = "spearman")$p.value),
+    ci = list(boot_spearman(x, Total.Cup.Points, B = 800)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ci_low = map_dbl(ci, 1),
+    ci_high = map_dbl(ci, 2),
+    rho_pct = 100 * rho,
+    ci_low_pct = 100 * ci_low,
+    ci_high_pct = 100 * ci_high,
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE ~ ""
+    ),
+    sign = if_else(rho >= 0, "positive", "negative"),
+    attribute = reorder(attribute, rho)
+  )
+
+ggplot(quality_measures_cor, aes(x = attribute, y = rho_pct, fill = rho_pct)) +
+  geom_col(color = "white", linewidth = 0.3) +
+  geom_errorbar(aes(ymin = ci_low_pct, ymax = ci_high_pct),
+                width = 0.2, color = "white", linewidth = 0.6) +
+  geom_text(aes(label = paste0(sprintf("%.0f%%", rho_pct), " ", sig)),
+            hjust = ifelse(quality_measures_cor$rho_pct > 0, -0.05, 1.05),
+            color = "black", size = 3) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0.15, 0.15))) +
+  scale_fill_gradient2(low = main_palette["velvet"], 
+                       mid = main_palette["cream"], 
+                       high = main_palette["muted_green"], 
+                       midpoint = 0, 
+                       name = "Spearman (%)") +
+  labs(
+    title = "Which sensory attributes are most associated with coffee quality?",
+    subtitle = "Spearman correlations with bootstrapped 95% confidence intervals",
+    x = NULL, y = "Correlation with Total Cup Points (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(face = "bold", size = 15, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 10, color = main_palette["dark"]),
+    legend.title = element_text(face = "bold", size = 7, color = main_palette["darker"]),
+    legend.text = element_text(color = main_palette["darker"])
+  )
+```
+
+Flavor, aftertaste, balance, acidity, and aroma show the strongest positive associations with overall coffee quality, proving them to be the main drivers of high coffee scores. Cleanness, uniformity and sweetness have minor to moderate positive correlation with the overall coffee quality. In contrast, defects and higher moisture levels are weakly negatively associated with quality, suggesting that poor processing slightly reduces final ratings but does not have such an extreme effect as the coffee quality measures that have a strong positive association with the final coffee score.
+
+## 2. Which countries grow the best coffee?
+
+### 2a. Interactive map of average coffee quality by country
+
+In this section, we examine how coffee quality varies across countries using an interactive world map. For each country with sufficient data, we interactively visualize the average coffee quality score and allow users to explore dominant coffee species and key sensory attributes that most strongly influence quality. This visualization aims to answer the question "Which countries grow the best coffee and what are such coffee's attributes?".
+
+To successfully visualize the data, we handled Hawaii separately so it does not contribute to the USA results. It is summarized as its own entity, its state polygon is extracted, enlarged using cartographic exaggeration to make it visible on the map, and added as an additional interactive layer. 
+
+The final output is a girafe widget with customized hover and tooltip styling.
+```{r interactive map}
+# World polygons
+world <- ne_countries(scale = "medium", returnclass = "sf") %>%
+ mutate(iso3 = iso_a3)
+
+# Hawaii summary (treated separate "country")
+hawaii_summary <- data %>%
+ filter(Country.of.Origin == "United States (Hawaii)") %>%
+ summarise(
+    iso3 = "HWI", # Fake ID for ggiraph
+    mean_score = mean(Total.Cup.Points, na.rm = TRUE),
+    n =n(),
+    Flavor = mean(Flavor, na.rm = TRUE),
+    Aftertaste = mean(Aftertaste, na.rm = TRUE),
+    Balance = mean(Balance, na.rm = TRUE),
+    Acidity = mean(Acidity, na.rm = TRUE),
+    arabica_share = mean(Species == "Arabica", na.rm = TRUE),
+    robusta_share = mean(Species == "Robusta", na.rm = TRUE)
+  ) %>%
+ mutate(
+    coffee_type =case_when(
+      arabica_share >= 0.9 ~ "Arabica",
+      robusta_share >= 0.9 ~ "Robusta",
+      TRUE ~ "Arabica & Robusta"
+    ),
+    name_long = "United States (Hawaii)"
+  )
+
+# Country summary
+country_summary <- data %>%
+ filter(
+    !is.na(Country.of.Origin),
+    Country.of.Origin != "",
+    Country.of.Origin != "United States (Hawaii)" # Excluding Hawaii so it does not count into USA
+  ) %>%
+ mutate(
+    iso3 = countrycode::countrycode(Country.of.Origin, "country.name", "iso3c")
+  ) %>%
+ filter(!is.na(iso3)) %>%
+ group_by(iso3) %>%
+ summarise(
+    mean_score = mean(Total.Cup.Points, na.rm = TRUE),
+    n =n(),
+    Flavor = mean(Flavor, na.rm = TRUE),
+    Aftertaste = mean(Aftertaste, na.rm = TRUE),
+    Balance = mean(Balance, na.rm = TRUE),
+    Acidity = mean(Acidity, na.rm = TRUE),
+    arabica_share = mean(Species == "Arabica", na.rm = TRUE),
+    robusta_share = mean(Species == "Robusta", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+ filter(n >= 5) %>%
+ mutate(
+    coffee_type =case_when(
+      arabica_share >= 0.9 ~ "Arabica",
+      robusta_share >= 0.9 ~ "Robusta",
+      TRUE ~ "Arabica & Robusta"
+    )
+  )
+
+# Joining world and country stats
+map_data <- world %>%
+ left_join(country_summary, by = "iso3")
+
+# Getting Hawaii polygon from US states
+us_states <- ne_states(country = "United States of America", returnclass = "sf")
+
+hawaii_poly <- us_states %>%
+ filter(name == "Hawaii") %>%
+ mutate(iso3 = "HWI") %>%
+ left_join(hawaii_summary, by = "iso3") %>%
+ mutate(name_long = "United States (Hawaii)")
+
+# Enlarging Hawaii to make it visible on the map
+hawaii_poly_enlarged <- hawaii_poly %>% st_transform(3857)
+
+haw_ctr <- st_coordinates(st_centroid(st_union(hawaii_poly_enlarged)))[1, ]
+k <- 4 # Scale factor
+
+hawaii_geom_scaled <- st_geometry(hawaii_poly_enlarged) %>%
+  lapply(function(g) {
+    (g - haw_ctr) * k + haw_ctr
+  }) %>%
+  st_sfc(crs = 3857)
+
+hawaii_poly <- hawaii_poly_enlarged %>%
+ mutate(geometry = hawaii_geom_scaled) %>%
+  st_transform(4326)
+
+# Hawaii tooltip
+hawaii_tooltip <- paste0(
+  "<b>United States (Hawaii)</b><br>",
+  "Mean score: ", round(hawaii_summary$mean_score, 1), "<br>",
+  "Coffees: ", hawaii_summary$n, "<br>",
+  "Type: ", hawaii_summary$coffee_type, "<br><br>",
+  "<b>Avg sensory profile</b><br>",
+  "Flavor: ", round(hawaii_summary$Flavor, 1), "<br>",
+  "Aftertaste: ", round(hawaii_summary$Aftertaste, 1), "<br>",
+  "Balance: ", round(hawaii_summary$Balance, 1), "<br>",
+  "Acidity: ", round(hawaii_summary$Acidity, 1)
+)
+
+# Interactive world and Hawaii polygon plot
+gg <- ggplot() +
+  ggiraph::geom_sf_interactive(
+    data = map_data,
+    aes(
+      fill = mean_score,
+      tooltip = paste0(
+        "<b>", name_long, "</b><br>",
+        "Mean score: ", round(mean_score, 1), "<br>",
+        "Coffees: ", n, "<br>",
+        "Type: ", coffee_type, "<br><br>",
+        "<b>Avg sensory profile</b><br>",
+        "Flavor: ", round(Flavor, 1), "<br>",
+        "Aftertaste: ", round(Aftertaste, 1), "<br>",
+        "Balance: ", round(Balance, 1), "<br>",
+        "Acidity: ", round(Acidity, 1)
+      ),
+      data_id = iso3
+    ),
+    color = "white",
+    linewidth = 0.2
+  ) +
+  ggiraph::geom_sf_interactive(
+    data = hawaii_poly,
+    aes(
+      fill = mean_score,
+      tooltip = hawaii_tooltip,
+      data_id = iso3
+    ),
+    color = "white",
+    linewidth = 0.2
+  ) +
+  scale_fill_gradientn(
+    colors = green_palette,
+    na.value = "#F5F5F5",
+    name = "Mean\nscore"
+  ) +
+  labs(
+    title = "Average coffee quality by country",
+    subtitle = "Hover over an area to see dominant coffee type and sensory profile"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", size = 25, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 15, color = main_palette["dark"]),
+    legend.title = element_text(face = "bold", color = main_palette["darker"]),
+    legend.text = element_text(color = main_palette["darker"])
+  )
+
+w <- ggiraph::girafe(
+  ggobj = gg,
+  width_svg = 10,
+  height_svg = 6,
+  options = list(
+    ggiraph::opts_sizing(rescale = TRUE),
+    ggiraph::opts_hover(css = "fill-opacity:1;"),
+    ggiraph::opts_tooltip(css =
+      "background-color:#F1F5F2;
+       border:1px solid #4F7F6A;
+       padding:10px;
+       border-radius:6px;
+       font-size:12px;
+       color:#1F4D3A;
+       font-weight:500;
+       box-shadow:0 2px 6px rgba(0,0,0,0.15);"
+    )
+  )
+)
+
+w
+```
+
+Countries with the highest average coffee quality are located in parts of East Africa. Countries in Central and South America and Southeast Asia also produce good coffee with a rating of over 80, however East Africa definitely takes the lead. Ethiopian coffees consistently achieve the highest Total Cup Points, while the second and third place goes to Kenya and Uganda. These top-scoring origins are characterized by stronger flavor, aftertaste, balance, and acidity profiles. 
+
+All countries with enough samples consist of Arabica coffee samples since Arabica dominates both in the world and in this dataset - 75% of the world's coffee production is Arabica and 25% is Robusta, but in our data the difference is even more drastic with only 2% of the total observations being Robusta samples. 
+
+What is interesting that all coffee profiles are balanced - the quality attributes usually have similar ranges for a coffee sample - well rated samples have moderate to high flavor, aftertaste, balance and acidity (all around 7.5) while excellent samples have very high flavor, aftertaste, balance and acidity (ranging between (ranging from 7.6 to 8.1). It is apparent that the higher the values of these attributes are, the better the coffee. Therefore, we can conclude, that 'objectively', the more intense a coffee is, the better it is. Interestingly enough, that is also a rule for acidity - this is surprising, since many people do not like acidic coffee and prefer it bitter and sweet. Therefore, it is possible, that coffee that is objectively "best" will not taste well for us.
+
+That is why, we should first explore what coffee profiles suit us, and then look for "best" coffees for those profiles. Therefore, we created visualizations below to find the right coffee for you, all based on your favorite coffee profile!
+
+### 2b. Personalized coffee recomendations - Interactive map of average coffee quality by country for different flavor profiles
+
+There is no single best coffee - it depends on what you like. This analysis is almost exclusively done on Arabica coffee, which is a definitive drawback, since coffees differ a lot between bean types. However, they also differ a lot between countries, which this analysis focuses on. For example, Ethiopian coffee is described as bright and floral, Colombian coffee is balanced, sweet and caramelly, Brazilian coffee is nutty and chocolatey with little acidity and Kenyan coffee is intense, fruity and acidic. This shows how much coffee differs between regions. 
+
+Your coffee choice must rely on your preferences. The plots below may serve as a helpful tool in identifying what countries grow the coffee you like best. Below, are visualizations of what countries satisfy three most common preference types: bright and acidic, sweet and dessert-like, rich and bold.
+```{r interactive map pref}
+taste_profiles3 <- list(
+  "bright and acidic" = c(Acidity = 0.55, Flavor = 0.20, Aroma = 0.15, Sweetness = 0.05, Body = -0.15),
+  "sweet and dessert-like" = c(Sweetness = 0.55, Flavor = 0.20, Aroma = 0.15, Balance = 0.15, Acidity = -0.35),
+  "rich and bold" = c(Body = 0.50, Aftertaste = 0.25, Flavor = 0.15, Balance = 0.10, Acidity = -0.20, Sweetness = -0.10)
+)
+
+# z-score
+z_score <- function(x) {
+  s <- sd(x, na.rm = TRUE)
+  if (is.na(s) || s == 0) return(rep(0, length(x)))
+  (x - mean(x, na.rm = TRUE)) / s
+}
+
+make_pref_score <- function(dataframe, profile_name, profiles = taste_profiles3) {
+  w <- profiles[[profile_name]]
+  if (is.null(w)) stop("Unknown profile_name: ", profile_name)
+
+  vars  <- names(w)
+  zvars <- paste0(vars, "_z")
+
+  dataframe <- dataframe %>%
+   mutate(across(all_of(vars), z_score, .names = "{.col}_z")) %>%
+   mutate(
+      pref_score = rowSums(
+       across(all_of(zvars), ~ .x * w[gsub("_z$", "",cur_column())]),
+        na.rm = TRUE
+      )
+    )
+
+  # Adding an extra penalty for acidity in the case of sweet coffees since they shouldn't be acidic
+  if (profile_name == "sweet and dessert-like") {
+    dataframe <- dataframe %>%mutate(pref_score = pref_score - 0.3 * pmax(0, Acidity_z)^2)
+  }
+
+  dataframe
+}
+
+plot_pref_map_country_interactive <- function(dataframe, profile_name, shrink_n = 20) {
+
+  weights <- taste_profiles3[[profile_name]]
+
+  vars <- names(weights)
+  pos_vars <- names(weights[weights > 0]) # Wanted characteristics
+  neg_vars <- names(weights[weights < 0]) # Characteristics we want to avoid
+
+  # Computing preference score per row
+  dataframe2 <- make_pref_score(dataframe, profile_name) %>%
+   filter(!is.na(Country.of.Origin), Country.of.Origin != "")
+
+  # Separating Hawaii so it is not included in USA
+  dataframe_hawaii <- dataframe2 %>%filter(Country.of.Origin == "United States (Hawaii)")
+  dataframe_world  <- dataframe2 %>%filter(Country.of.Origin != "United States (Hawaii)")
+
+  # Country ISO codes
+  dataframe_world <- dataframe_world %>%
+   mutate(iso3 = countrycode::countrycode(Country.of.Origin, "country.name", "iso3c")) %>%
+   filter(!is.na(iso3))
+
+  country_pref <- dataframe_world %>%
+   group_by(iso3) %>%
+   summarise(
+      mean_pref = mean(pref_score, na.rm = TRUE),
+
+      # Raw index (wanted - avoided)
+      raw_wanted = mean(rowMeans(across(all_of(pos_vars)), na.rm = TRUE), na.rm = TRUE),
+      raw_avoid = if (length(neg_vars) > 0)
+      mean(rowMeans(across(all_of(neg_vars)), na.rm = TRUE), na.rm = TRUE)
+      else NA_real_,
+      raw_index = if (length(neg_vars) > 0) raw_wanted - raw_avoid else raw_wanted,
+
+      mean_score = mean(Total.Cup.Points, na.rm = TRUE),
+      n = n(),
+      
+      across(all_of(vars), ~ mean(.x, na.rm = TRUE)),
+
+      arabica_share = mean(Species == "Arabica", na.rm = TRUE),
+      robusta_share = mean(Species == "Robusta", na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+   mutate(
+      coffee_type =case_when(
+        arabica_share >= 0.9 ~ "Arabica",
+        robusta_share >= 0.9 ~ "Robusta",
+        TRUE ~ "Arabica & Robusta"
+      ),
+      mean_pref_adj = if (shrink_n > 0) mean_pref * (n / (n + shrink_n)) else mean_pref
+    )
+
+  # Hawaii summary
+  hawaii_pref <- dataframe_hawaii %>%
+   summarise(
+      iso3 = "HWI",
+      mean_pref = mean(pref_score, na.rm = TRUE),
+
+      raw_wanted = mean(rowMeans(across(all_of(pos_vars)), na.rm = TRUE), na.rm = TRUE),
+      raw_avoid = if (length(neg_vars) > 0)
+        mean(rowMeans(across(all_of(neg_vars)), na.rm = TRUE), na.rm = TRUE)
+      else NA_real_,
+      raw_index = if (length(neg_vars) > 0) raw_wanted - raw_avoid else raw_wanted,
+
+      mean_score = mean(Total.Cup.Points, na.rm = TRUE),
+      n =n(),
+     across(all_of(vars), ~ mean(.x, na.rm = TRUE)),
+      arabica_share = mean(Species == "Arabica", na.rm = TRUE),
+      robusta_share = mean(Species == "Robusta", na.rm = TRUE)
+    ) %>%
+   mutate(
+      coffee_type = case_when(
+        arabica_share >= 0.9 ~ "Arabica",
+        robusta_share >= 0.9 ~ "Robusta",
+        TRUE ~ "Arabica & Robusta"
+      ),
+      name_long = "United States (Hawaii)",
+      mean_pref_adj = if (shrink_n > 0) mean_pref * (n / (n + shrink_n)) else mean_pref
+    )
+
+  # Building map data and tooltip for countries
+  map_data <- world %>%
+   left_join(country_pref, by = "iso3") %>%
+   rowwise() %>%
+   mutate(
+      tooltip = paste0(
+        "<b>", name_long, "</b><br>",
+        "Preference: <b>", profile_name, "</b><br>",
+        "Coffees: ", n, "<br>",
+        "Type: ", coffee_type, "<br><br>",
+        "<b>Profile fit</b><br>",
+        "Raw index (wanted − avoided): <b>", round(raw_index, 2), "</b><br>",
+        "Weighted preference score: ", round(mean_pref, 2), "<br>",
+        if (shrink_n > 0) paste0("Adjusted (small-n shrink): ", round(mean_pref_adj, 2), "<br>") else "",
+        "Mean Total Cup Points: ", round(mean_score, 1), "<br><br>",
+        "<b>Avg attributes (0-10)</b><br>",
+        paste(paste0(vars, ": ", round(c_across(all_of(vars)), 2)), collapse = "<br>")
+      )
+    ) %>%
+   ungroup()
+
+  # Hawaii tooltip
+  hawaii_tooltip_pref <- paste0(
+    "<b>United States (Hawaii)</b><br>",
+    "Preference: <b>", profile_name, "</b><br>",
+    "Coffees: ", hawaii_pref$n, "<br>",
+    "Type: ", hawaii_pref$coffee_type, "<br><br>",
+    "<b>Profile fit</b><br>",
+    "Raw index (wanted − avoided): <b>", round(hawaii_pref$raw_index, 2), "</b><br>",
+    "Weighted preference score: ", round(hawaii_pref$mean_pref, 2), "<br>",
+    if (shrink_n > 0) paste0("Adjusted (small-n shrink): ", round(hawaii_pref$mean_pref_adj, 2), "<br>") else "",
+    "Mean Total Cup Points: ", round(hawaii_pref$mean_score, 1), "<br><br>",
+    "<b>Avg attributes (0-10)</b><br>",
+    paste(paste0(vars, ": ", round(unlist(hawaii_pref[vars]), 2)), collapse = "<br>")
+  )
+
+  # Attaching the specific preference score to Hawaii polygon
+  hawaii_poly_pref <- hawaii_poly %>%
+   mutate(
+      mean_pref_adj = hawaii_pref$mean_pref_adj,
+      tooltip = hawaii_tooltip_pref
+    )
+
+  # Interactive world and Hawaii polygon plot
+  gg <- ggplot() +
+    ggiraph::geom_sf_interactive(
+      data = map_data,
+      aes(
+        fill = mean_pref_adj,
+        tooltip = tooltip,
+        data_id = iso3
+      ),
+      color = "white",
+      linewidth = 0.2
+    ) +
+    ggiraph::geom_sf_interactive(
+      data = hawaii_poly_pref,
+      aes(
+        fill = mean_pref_adj,
+        tooltip = tooltip,
+        data_id = iso3
+      ),
+      color = "white",
+      linewidth = 0.2
+    ) +
+    scale_fill_gradientn(
+      colors = preference_palette,
+      na.value = "#F5F5F5",
+      name = "Preference\nscore"
+    ) +
+    labs(
+      title = "Average coffee quality for you preference by country",
+      subtitle = paste0("Hover over an area to explore the ", profile_name, " coffee profile")
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      panel.grid = element_blank(),
+      plot.title = element_text(face = "bold", size = 22, color = main_palette["darker"]),
+      plot.subtitle = element_text(face = "bold", size = 12, color = main_palette["dark"]),
+      legend.title = element_text(face = "bold", color = main_palette["darker"]),
+      legend.text = element_text(color = main_palette["darker"])
+    )
+
+  ggiraph::girafe(
+    ggobj = gg,
+    width_svg = 10,
+    height_svg = 6,
+    options = list(
+      ggiraph::opts_sizing(rescale = TRUE),
+      ggiraph::opts_hover(css = "fill-opacity:1;"),
+      ggiraph::opts_tooltip(css =
+        "background-color:#F1F5F2;
+         border:1px solid #4F7F6A;
+         padding:10px;
+         border-radius:6px;
+         font-size:12px;
+         color:#1F4D3A;
+         font-weight:500;
+         box-shadow:0 2px 6px rgba(0,0,0,0.15);"
+      )
+    )
+  )
+}
+
+# Three interactive maps - for each preference type
+plot_pref_map_country_interactive(data, "bright and acidic", shrink_n = 20)
+plot_pref_map_country_interactive(data, "sweet and dessert-like", shrink_n = 20)
+plot_pref_map_country_interactive(data, "rich and bold", shrink_n = 20)
+```
+
+The preference score is a relative, standardized measure where higher values indicate a stronger match between a coffee's sensory profile and a chosen taste preference, so countries shaded in green are better matches for that specific flavor profile than countries shaded in yellow or red. That being said, coffee from countries with negative preference score values (red) is not a good fit while coffee from countries with a score over 0.5 (green) is a promising option and can be a good fit for the specified profile.
+
+In general, if you prefer bright and acidic coffee, you should try coffees from East Africa (Ethiopia, Kenya, Uganda) while avoiding coffee from North and Central America (Mexico, Honduras, Nicaragua).
+
+On the other hand, if you like your coffee sweet and dessert-like but not acidic, you have a lot to choose from - coffees from North, Central and South America (Mexico, Colombia, Brazil), Tanzania and Uganda or South and Southeast Asia (China, Thailand, Indonesia) are a good place to start. However, you should be cautious with Ethiopian coffee and definitely stay away from Indian coffee.
+
+Finally, if you favor strong, rich and bold coffee, then the best choice for you is coffee from Ethiopia, Kenya, Uganda and Colombia and the worst one is coffee from North and Central America (Mexico, Guatemala, Honduras, Nicaragua).
+
+## 3. How do processing methods affect coffee quality across top-producing countries?
+
+Now that we explored which countries grow coffee that is best for different preference profiles, we will focus on another aspect of coffee making that influences the way that coffee tastes, which is the coffee processing method. Washed (wet) processing typically produces cleaner, brighter, and more acidic coffees; natural (dry) processing enhances sweetness, fruitiness, and body; while honey and semi-washed methods balance clarity with sweetness. Therefore, when picking the right coffee for you, you need to choose both the country of origin as well as the coffee pre-processing method as both have a strong influence on how the coffee tastes.
+
+In this section, we created an interactive chart which shows how top coffee-producing countries preprocess their coffee. To show how each coffee processing method influences coffee taste and quality, we created the plot to show not only the share of samples per processing method per country, but also the average Total Cup Points (rating) for that specific processing method within each country.
+```{r processing methods}
+# Fixing inconsistencies in country names 
+data2 <- data %>%
+  mutate(
+    Country_clean = case_when(
+      Country.of.Origin == "Tanzania, United Republic Of" ~ "Tanzania",
+      Country.of.Origin == "United States (Hawaii)" ~ "USA (Hawaii)",
+      Country.of.Origin == "United States" ~ "USA",
+      TRUE ~ Country.of.Origin
+    )
+  )
+
+# Taste descriptions for processing methods
+proc_taste <- c(
+  "Washed / Wet" = "clean, bright, higher acidity",
+  "Natural / Dry" = "fruitier, sweeter, heavier body",
+  "Pulped natural / honey" = "sweet + clean, balanced",
+  "Semi-washed / Semi-pulped" = "cleaner, mild sweetness",
+  "Other" = "mixed or less common methods"
+)
+
+# Country to continent mapping 
+world_meta <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  st_drop_geometry() %>%
+  transmute(
+    Country_clean = case_when(
+      name_long == "United States of America" ~ "USA",
+      TRUE ~ name_long
+    ),
+    continent
+  )
+
+# Adding Hawaii
+world_meta <- bind_rows(
+  world_meta,
+  tibble(Country_clean = "USA (Hawaii)", continent = "Oceania")
+)
+
+# Selecting top countries and attaching continent 
+country_sum <- data2 %>%
+  filter(!is.na(Country_clean), Country_clean != "") %>%
+  group_by(Country_clean) %>%
+  summarise(
+    n = n(),
+    mean_total = mean(Total.Cup.Points, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(world_meta, by = "Country_clean") %>%
+  mutate(continent = if_else(is.na(continent), "Other/Unknown", continent)) %>%
+  filter(n >= 20) %>%
+  slice_max(mean_total, n = 15) %>%
+  arrange(continent, desc(mean_total)) %>%
+  mutate(Country_clean = factor(Country_clean, levels = Country_clean))
+
+# Processing composition + mean score per method
+proc_mix <- data2 %>%
+  filter(Country_clean %in% levels(country_sum$Country_clean)) %>%
+  group_by(Country_clean, Processing.Method) %>%
+  summarise(
+    count = n(),
+    mean_method_score = mean(Total.Cup.Points, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(select(country_sum, Country_clean, continent), by = "Country_clean") %>%
+  group_by(Country_clean) %>%
+  mutate(
+    p = count / sum(count),
+    taste = proc_taste[Processing.Method],
+    tooltip = paste0(
+      "<b>", Country_clean, "</b><br>",
+      "Continent: ", continent, "<br>",
+      "Method: <b>", Processing.Method, "</b><br>",
+      "Taste: ", taste, "<br>",
+      "Share: ", scales::percent(p, accuracy = 0.1), "<br>",
+      "Avg score (this method): <b>", round(mean_method_score, 1), "</b><br>",
+      "Samples: ", count
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(Country_clean = factor(Country_clean, levels = levels(country_sum$Country_clean)))
+
+# Interactive plot 
+gg_proc <- ggplot(proc_mix, aes(x = Country_clean, y = count, fill = Processing.Method)) +
+  ggiraph::geom_col_interactive(
+    aes(
+      tooltip = tooltip,
+      data_id = paste(Country_clean, Processing.Method)
+    ),
+    position = "fill",
+    width = 0.8
+  ) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(
+    values = c(
+      "Natural / Dry" = main_palette[["coffee"]],
+      "Other" = main_palette[["raw_green"]],
+      "Pulped natural / honey" = main_palette[["golden"]],
+      "Semi-washed / Semi-pulped" = main_palette[["caramel"]],
+      "Washed / Wet" = main_palette[["roasted"]]
+    )
+  ) +
+  facet_grid(
+    rows = vars(continent),
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
+  labs(
+    title = "How top countries process coffee",
+    subtitle = "Hover to see taste, sample share, and average quality per method",
+    x = NULL,
+    y = "Share of samples",
+    fill = "Processing"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title.position = "plot",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing.y = unit(1.4, "lines"),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(
+      face = "bold",
+      size = 6,
+      color = main_palette["darker"],
+      margin = margin(0, 6, 0, 6)
+    ),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.switch.pad.grid = unit(0.35, "cm"),
+    plot.margin = margin(12, 12, 12, 70),
+    plot.title = element_text(face = "bold", size = 12, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 8, color = main_palette["dark"]),
+    axis.text = element_text(color = main_palette["darker"]),
+    legend.title = element_text(face = "bold", color = main_palette["darker"]),
+    legend.text = element_text(color = main_palette["darker"])
+  )
+
+ggiraph::girafe(
+  ggobj = gg_proc,
+  width_svg = 10,
+  height_svg = 6,
+  options = list(
+    ggiraph::opts_sizing(rescale = TRUE),
+    ggiraph::opts_hover(css = "opacity:1;"),
+    ggiraph::opts_tooltip(css =
+      "background-color:#F1F5F2;
+       border:1px solid #4F7F6A;
+       padding:10px;
+       border-radius:6px;
+       font-size:12px;
+       color:#1F4D3A;
+       box-shadow:0 2px 6px rgba(0,0,0,0.15);"
+    )
+  )
+)
+```
+
+Across most top-producing countries, the most common processing methods are washed and natural. 
+Both of these methods achieve high scores and there is no clear domination of one method over the other. Washed coffee is clearly rated better in Hawaii, Uganda and Ethiopia. In the other shown countries, the natural method either outperforms the washed method or is just as good.
+
+More experimental methods such as honey and semi-washed appear less frequently but can yield standout scores in specific contexts - in Uganda, the highest rated method is Semi-washed / Semi-pulped while in Thailand and Taiwan the best rated method is Pulped natural / honey. This suggests that processing innovation can be highly effective when well-matched to local conditions.
+
+## 4. If we know what makes good coffee... what separates good from exceptional?
+
+### 4a. Which processing methods survive higher quality standards?
+
+In this section, we move beyond basic distributions and focus on what truly distinguishes good coffee from exceptional coffee. 
+Instead of looking only at average scores, we gradually increase the quality threshold and observe how the composition of processing methods changes among the highest-scoring coffees.  
+
+This approach allows us to answer a question: which processing styles are more likely to survive increasingly strict quality standards?  
+By tracking how different methods disappear or dominate as the minimum score rises, we can better understand which techniques consistently deliver top-tier quality rather than occasional high results.
+```{r animated plot sep}
+# Creating the thresholds grid for the animation
+thresholds_grid <- tibble(
+  threshold = seq(
+    floor(70),
+    ceiling(max(data$Total.Cup.Points, na.rm = TRUE)),
+    by = 1
+  )
+)
+
+keep_methods <- c(
+  "Natural / Dry",
+  "Washed / Wet",
+  "Pulped natural / honey",
+  "Semi-washed / Semi-pulped"
+)
+
+proc_order <- c(
+  "Natural / Dry",
+  "Other",
+  "Pulped natural / honey",
+  "Semi-washed / Semi-pulped",
+  "Washed / Wet"
+)
+
+# For each threshold we are keeping only coffees with score higher or equal to threshold
+coffee_threshold <- thresholds_grid %>%
+  crossing(data %>% filter(!is.na(Total.Cup.Points))) %>%
+  filter(Total.Cup.Points >= threshold) %>%
+  mutate(
+    proc = fct_other(Processing.Method, keep = keep_methods, other_level = "Other"),
+    proc = factor(proc, levels = proc_order)
+  ) %>%
+  count(threshold, proc, name = "n") %>%
+  group_by(threshold) %>%
+  mutate(
+    total = sum(n),
+    p = n / total,
+    lab = paste0(scales::percent(p, accuracy = 1), " (n = ", n, ")")
+  ) %>%
+  ungroup()
+
+# Creating "Samples left" badge
+coffee_threshold_badge <- coffee_threshold %>%
+  distinct(threshold, total) %>%
+  mutate(group_badge = 1)
+
+gg_sep <- ggplot(coffee_threshold, aes(x = proc, y = p, fill = proc, group = proc)) +
+  geom_col(width = 0.75, show.legend = FALSE) +
+  coord_flip(clip = "off") +
+  scale_x_discrete(limits = rev(proc_order)) +
+  geom_text(
+    data = coffee_threshold %>%
+      filter(!is.na(lab)),
+    aes(label = lab),
+    hjust = -0.06,
+    size = 3.8,
+    color = main_palette[["dark"]]
+  ) +
+  geom_label(
+    data = coffee_threshold_badge,
+    aes(
+      x = Inf,
+      y = Inf,
+      label = paste0("Samples left: ", scales::comma(total)),
+      group = group_badge
+    ),
+    inherit.aes = FALSE,
+    hjust = 1.05,
+    vjust = 1.6,
+    label.size = 0,
+    size = 4,
+    fontface = "bold",
+    fill = "white",
+    color = main_palette[["dark"]],
+    alpha = 0.92
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Natural / Dry" = main_palette[["coffee"]],
+      "Washed / Wet" = main_palette[["roasted"]],
+      "Pulped natural / honey" = main_palette[["golden"]],
+      "Semi-washed / Semi-pulped" = main_palette[["caramel"]],
+      "Other" = main_palette[["raw_green"]]
+    )
+  ) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 1.12),
+    expand = expansion(mult = c(0, 0.03))
+  ) +
+  labs(
+    title = "Processing that survives higher quality standards",
+    subtitle = "Share of processing methods among coffees with total score ≥ {current_frame} points",
+    x = "Processing method",
+    y = "Share of coffees"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title.position = "plot",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing.y = unit(1.4, "lines"),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(
+      face = "bold",
+      size = 6,
+      color = main_palette["darker"],
+      margin = margin(0, 6, 0, 6)
+    ),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.switch.pad.grid = unit(0.35, "cm"),
+    plot.margin = margin(12, 12, 12, 70),
+    plot.title = element_text(face = "bold", size = 12, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 8, color = main_palette["dark"]),
+    axis.text = element_text(color = main_palette["darker"])
+  ) +
+  transition_manual(threshold) # Manual frame-by-frame animation to keep colors and labels stable
+
+a_sep <- animate(
+  gg_sep,
+  width = 900,
+  height = 550,
+  units = "px",
+  fps = 3,
+  end_pause = 5,
+  renderer = gifski_renderer(loop = TRUE)
+)
+
+# Due to scaling issues when knitting the RMarkdown file, the gif was saved separately in an .R script and then included in the .Rmd document
+#anim_save("a_sep.gif", a_sep)
+knitr::include_graphics("a_sep.gif")
+```
+
+As quality standards rise, the market filters out most processing styles. Washed coffees dominate from the start and remain dominant as the selection becomes stricter.  
+
+While natural and semi-washed coffees occasionally enter the top-quality range, their presence remains limited and unstable. At the very highest level of quality, only washed coffee remains, highlighting the role of standardized wet processing as the most reliable technique for producing exceptional coffees.
+
+The animation illustrates not only which methods are most common, but which ones truly survive when only the very best coffees are considered.
+
+### 4b. What does an excceptional coffee look like as a profile?
+
+After identifying which processing methods consistently meet higher quality standards, we now focus on the sensory profile of exceptional coffees.
+```{r animated plot taste}
+# Creating deciles of total cup score for quality bands
+data2 <- data %>%
+  filter(
+    !is.na(Total.Cup.Points),
+    !is.na(Aroma),
+    !is.na(Flavor)
+  ) %>%
+  mutate(
+    score_decile = ntile(Total.Cup.Points, 10),
+    score_band = factor(
+      score_decile,
+      levels = 1:10,
+      labels = c(
+        "0 - 10%", "10 - 20%", "20 - 30%", "30 - 40%", "40 - 50%",
+        "50 - 60%", "60 - 70%", "70 - 80%", "80 - 90%", "90 - 100%"
+      )
+    )
+  )
+
+x_lim <- range(data2$Aroma, na.rm = TRUE)
+y_lim <- range(data2$Flavor, na.rm = TRUE)
+
+# Color palette for quality bands
+quality_palette <- c(
+  "0 - 10%" = main_palette[["roasted"]],
+  "10 - 20%" = main_palette[["roasted"]],
+  "20 - 30%" = main_palette[["coffee"]],
+  "30 - 40%" = main_palette[["coffee"]],
+  "40 - 50%" = main_palette[["caramel"]],
+  "50 - 60%" = main_palette[["caramel"]],
+  "60 - 70%" = main_palette[["golden"]],
+  "70 - 80%" = main_palette[["golden"]],
+  "80 - 90%" = main_palette[["raw_green"]],
+  "90 - 100%" = main_palette[["raw_green"]]
+)
+
+ # Animated scatter plot with density contours
+gg_taste <- ggplot(data2, aes(x = Aroma, y = Flavor, color = score_band)) +
+  geom_point(alpha = 0.22, size = 1) +
+  geom_density2d(aes(color = score_band), linewidth = 0.35) +
+  coord_cartesian(xlim = x_lim, ylim = y_lim) +
+  scale_color_manual(values = quality_palette) +
+  labs(
+    title = "Taste space shifts as quality rises",
+    subtitle = "Quality band: {closest_state}",
+    x = "Aroma score",
+    y = "Flavor score",
+    color = "Quality band"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title.position = "plot",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing.y = unit(1.4, "lines"),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(
+      face = "bold",
+      size = 6,
+      color = main_palette["darker"],
+      margin = margin(0, 6, 0, 6)
+    ),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.switch.pad.grid = unit(0.35, "cm"),
+    plot.margin = margin(12, 12, 12, 70),
+    plot.title = element_text(face = "bold", size = 12, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 8, color = main_palette["dark"]),
+    axis.text = element_text(color = main_palette["darker"])
+  ) +
+  transition_states(score_band, state_length = 3, transition_length = 1) +
+  ease_aes("linear")
+
+a_taste <- animate(
+  gg_taste,
+  width = 900,
+  height = 550,
+  units = "px",
+  fps = 3,
+  end_pause = 5,
+  renderer = gifski_renderer(loop = TRUE)
+)
+
+# Due to scaling issues when knitting the RMarkdown file, the gif was saved separately in an .R script and then included in the .Rmd document
+#anim_save("a_taste.gif", a_taste)
+knitr::include_graphics("a_taste.gif")
+```
+
+This animation reveals how the sensory structure of coffee evolves as overall quality increases.  
+
+At the lowest quality bands, the taste space is wide and highly dispersed. Aroma and flavor scores show substantial variation and no clear sensory pattern can be identified. This high variability suggests that low-quality coffees are inconsistent and characterized by unstable sensor profiles.
+
+As the quality band rises, the cloud of points gradually moves toward the upper-right region of the plot and becomes increasingly concentrated. The relationship between aroma and flavor becomes stronger, showing that higher-quality coffees tend to consistnetly score highly on both attributes.
+
+Overall, the animation demonstrates that exceptional quality is not only rare, but also highly structured. As coffee quality increases, sensory diversity decreases and profiles converge toward a precise and optimized balance between aroma and flavor.
+
+## 5. What gives exceptional coffee its advantage?
+
+We have already seen that exceptional coffees occupy a narrow "taste space". Now we take a closer look to understand which sensory attributes create this advantage and whether top coffees share a similar "fingerprint" across multiple dimensions.
+
+### 5a. Which sensory attributes drive exceptional quality?
+
+To understand which sensory attributes give exceptional coffees their advantage, we break down the quality gap between top (for this plot 10% of the highest quality coffees) and average coffees into contributions from individual sensory attributes.
+
+```{r waterfall}
+library(tidyverse) # Needed for the document to knit correctly
+
+# Define score cutoffs for exceptional coffees
+q90 <- quantile(data$Total.Cup.Points, 0.90, na.rm = TRUE)
+q50 <- quantile(data$Total.Cup.Points, 0.50, na.rm = TRUE)
+
+attrs <- c("Aroma", "Flavor", "Aftertaste", "Acidity", "Body", "Balance",
+           "Sweetness", "Clean.Cup", "Uniformity")
+
+wf <- data %>%
+  filter(!is.na(Total.Cup.Points)) %>%
+  mutate(group = case_when(
+    Total.Cup.Points >= q90 ~ "Top 10%",
+    Total.Cup.Points <= q50 ~ "Bottom 50%",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(group)) %>%
+  select(all_of(c("group", attrs))) %>%
+  pivot_longer(-group, names_to = "attr", values_to = "value") %>%
+  group_by(group, attr) %>%
+  summarise(m = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = group, values_from = m) %>%
+  mutate(delta = `Top 10%` - `Bottom 50%`) %>%
+  arrange(desc(delta)) %>%
+  mutate(
+    attr = factor(attr, levels = attr),
+    start = lag(cumsum(delta), default = 0),
+    end = start + delta,
+    ymin = pmin(start, end),
+    ymax = pmax(start, end),
+    sign = if_else(delta >= 0, "Positive", "Negative")
+  )
+
+wf_cols <- c(
+  "Positive" = main_palette[["coffee"]],
+  "Negative" = main_palette[["velvet"]]
+)
+
+wf <- wf %>%
+  mutate(
+    lab = sprintf("%+.2f", delta),
+    lab_y = if_else(delta >= 0, ymax, ymin),
+    lab_hjust = if_else(delta >= 0, -0.10, 1.10)
+  )
+
+y_min <- min(wf$ymin, wf$ymax, 0, na.rm = TRUE)
+y_max <- max(wf$ymin, wf$ymax, 0, na.rm = TRUE)
+
+gg_wf <- ggplot(wf, aes(x = attr)) +
+  geom_rect(
+    aes(
+      xmin = as.numeric(attr) - 0.45,
+      xmax = as.numeric(attr) + 0.45,
+      ymin = ymin, ymax = ymax,
+      fill = sign
+    ),
+    color = "white", linewidth = 0.35
+  ) +
+  geom_segment(
+    aes(
+      x = as.numeric(attr) + 0.45,
+      xend = as.numeric(attr) + 0.55,
+      y = end, yend = end
+    ),
+    color = "grey55", linewidth = 0.35
+  ) +
+  geom_hline(yintercept = 0, linewidth = 0.5, color = "grey35") +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = wf_cols) +
+  scale_y_continuous(
+    limits = c(y_min, y_max) + c(-0.15, 0.20),
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  labs(
+    title = "What gives exceptional coffee its edge?",
+    subtitle = "Waterfall of mean attribute differences (top 10% - bottom 50%)",
+    x = NULL,
+    y = "Cumulative advantage across attributes"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.title.position = "plot",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing.y = unit(1.4, "lines"),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(
+      face = "bold",
+      size = 6,
+      color = main_palette["darker"],
+      margin = margin(0, 6, 0, 6)
+    ),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.switch.pad.grid = unit(0.35, "cm"),
+    plot.margin = margin(12, 12, 12, 70),
+    plot.title = element_text(face = "bold", size = 12, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 8, color = main_palette["dark"]),
+    axis.text = element_text(color = main_palette["darker"])
+  ) +
+  geom_text(
+    aes(y = lab_y, label = lab, hjust = lab_hjust),
+    size = 3.6,
+    color = main_palette[["dark"]]
+  )
+
+gg_wf
+```
+
+We created the waterfall plot to compare the sensory profiles of the top 10% best rated coffees with the bottom 50% worst rated coffees.
+
+The largest differences come from aftertaste, flavor, balance, acidity and aroma, showing that higher scores of these five attributes make exceptional coffees stand out.
+
+Importantly, exceptional coffee does not win by having one outstanding attribute, it wins by having a combination of many of them.
+
+### 5b. What is the sensory fingerprint of exceptional coffee?
+
+Exceptional coffee is not defined by a single attribute, but by characteristic combination of flavors. In this section we visualize the sensory "fingerprint" of top-scoring coffees to reveal the patterns of aroma, flavor, aftertaste, acidity, body and balance that appears in the best samples.
+
+```{r joint distrbution}
+attrs_pc <- c("Aroma", "Flavor", "Aftertaste", "Acidity", "Body", "Balance")
+
+# Rescaling the data
+pc <- data %>%
+  filter(!is.na(Total.Cup.Points)) %>%
+  select(all_of(c("Total.Cup.Points", attrs_pc))) %>%
+  drop_na() %>%
+  mutate(across(all_of(attrs_pc), ~ rescale(.x, to = c(0, 1)))) %>%
+  mutate(id = row_number())
+
+pc_top <- pc %>%
+  slice_max(Total.Cup.Points, n = 100)
+
+# Long format for line plotting
+pc_long_all <- pc %>%
+  pivot_longer(all_of(attrs_pc), names_to = "attr", values_to = "value") %>%
+  mutate(attr = factor(attr, levels = attrs_pc))
+
+pc_long_top <- pc_top %>%
+  pivot_longer(all_of(attrs_pc), names_to = "attr", values_to = "value") %>%
+  mutate(attr = factor(attr, levels = attrs_pc))
+
+# Summary band and mean line for top coffees
+top_summary <- pc_long_top %>%
+  group_by(attr) %>%
+  summarise(
+    q25 = quantile(value, 0.25, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    q75 = quantile(value, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+top_summary <- top_summary %>%
+  mutate(attr_x = as.numeric(attr))
+
+ribbons <- purrr::map_dfr(1:(nrow(top_summary) - 1), function(i) {
+  tibble(
+    x = c(top_summary$attr_x[i], top_summary$attr_x[i + 1],
+          top_summary$attr_x[i + 1], top_summary$attr_x[i]),
+    y = c(top_summary$q25[i], top_summary$q25[i + 1],
+          top_summary$q75[i + 1], top_summary$q75[i])
+  )
+})
+
+gg_fp <- ggplot() +
+  geom_line(
+    data = pc_long_all,
+    aes(x = attr, y = value, group = id),
+    color = "grey75",
+    linewidth = 0.25,
+    alpha = 0.06
+  ) +
+  geom_polygon(
+    data = ribbons,
+    aes(x = x, y = y),
+    fill = main_palette[["golden"]],
+    alpha = 0.18,
+    color = NA
+  ) +
+  geom_line(
+    data = pc_long_top,
+    aes(x = attr, y = value, group = id),
+    color = main_palette[["coffee"]],
+    linewidth = 0.5,
+    alpha = 0.20
+  ) +
+  geom_line(
+    data = top_summary,
+    aes(x = attr, y = mean, group = 1),
+    color = main_palette[["roasted"]],
+    linewidth = 1.3
+  ) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::number_format(accuracy = 0.1)) +
+  labs(
+    title = "The sensory fingerprint of exceptional coffee",
+    subtitle = "What separates exceptional coffee is not one attribute, but a balanced sensory fingerprint.",
+    x = NULL,
+    y = "Rescaled attribute score (0-1)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title.position = "plot",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing.y = unit(1.4, "lines"),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(
+      face = "bold",
+      size = 6,
+      color = main_palette["darker"],
+      margin = margin(0, 6, 0, 6)
+    ),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.switch.pad.grid = unit(0.35, "cm"),
+    plot.margin = margin(12, 12, 12, 70),
+    plot.title = element_text(face = "bold", size = 12, color = main_palette["darker"]),
+    plot.subtitle = element_text(face = "bold", size = 8, color = main_palette["dark"]),
+    axis.text = element_text(color = main_palette["darker"])
+  )
+
+gg_fp
+```
+
+The brown lines show the full diversity of coffees in the dataset, revealing how individual samples differs widely across aroma, flavor, aftertaste, acidity, body and balance.
+
+In contrast, the highlighted line shows the average "fingerprint" of the top-scoring coffees. Rather than peaking in just one category, exceptional coffees consistently have high score across all attributes, with particularly strong aroma, acidity and balance.
+
+### 5c. Which sensory attributes come as a bundle in exceptional coffees?
+
+Exceptional coffee is not only about strong individual attributes, but also about how these attributes work together. Some sensory characteristics naturally co-occur, creating typical combinations that define outstanding flavor profiles.
+
+```{r chord diagram}
+# Creating chord diagram found on R Charts website
+attrs_ch <- c("Aroma","Flavor","Aftertaste","Acidity","Body","Balance")
+
+q90 <- quantile(data$Total.Cup.Points, 0.90, na.rm = TRUE)
+
+top10 <- data %>%
+  filter(!is.na(Total.Cup.Points), Total.Cup.Points >= q90) %>%
+  select(all_of(attrs_ch)) %>%
+  drop_na()
+
+threshold <- top10 %>%
+  summarise(across(all_of(attrs_ch), ~ median(.x, na.rm = TRUE)))
+
+top10_high <- top10 %>%
+  mutate(across(all_of(attrs_ch), ~ .x >= threshold[[cur_column()]]))
+
+coocurance_matrix <- matrix(0, nrow = length(attrs_ch), ncol = length(attrs_ch),
+              dimnames = list(attrs_ch, attrs_ch))
+
+for (i in seq_along(attrs_ch)) {
+  for (j in seq_along(attrs_ch)) {
+    if (i != j) {
+      coocurance_matrix[i, j] <- sum(top10_high[[attrs_ch[i]]] & top10_high[[attrs_ch[j]]])
+    }
+  }
+}
+
+coocurance_matrix <- (coocurance_matrix + t(coocurance_matrix)) / 2
+diag(coocurance_matrix) <- 0
+
+# Keeping only pairs with coocurance values above the median
+vals <- coocurance_matrix[coocurance_matrix]
+cutoff <- quantile(vals, 0.50, na.rm = TRUE)
+mat_f <- coocurance_matrix
+mat_f[mat_f < cutoff] <- 0
+if (sum(mat_f > 0) == 0) mat_f <- coocurance_matrix
+
+circos.clear()
+
+# More gap between sectors and more outer space for labels
+circos.par(
+  start.degree = 90,
+  gap.degree = 10,
+  track.margin = c(0.02, 0.02),
+  canvas.xlim = c(-1.25, 1.25),
+  canvas.ylim = c(-1.20, 1.20)
+)
+
+chordDiagram(
+  x = mat_f,
+  grid.col = coffee_palette,
+  transparency = 0.35,
+  directional = 0,
+  annotationTrack = c("grid"),
+  preAllocateTracks = 1
+)
+
+# Customization of the labels
+circos.track(
+  track.index = 1,
+  panel.fun = function(x, y) {
+    circos.text(
+      x = CELL_META$xcenter,
+      y = CELL_META$ylim[2] + mm_y(3.5),
+      labels = CELL_META$sector.index,
+      facing = "clockwise",
+      niceFacing = TRUE,
+      adj = c(0.5, 0),
+      cex = 0.9,
+      font = 2
+    )
+  },
+  bg.border = NA
+)
+
+title("Attribute bundles in exceptional coffee (top 10%)")
+```
+
+Exceptional coffee is not only about strong individual attributes, but also about how these attributes work together. Some sensory characteristics naturally co-occur, creating typical combinations that define outstanding flavor profiles.
+
+The chord diagram shows how the main sensory attributes co-occur in exceptional coffes (top 10%).
+
+Around the circle we have the six key attributes: flavor, aftertaste, acidity, body, balance and aroma. Each segment represents one attribute and the ribbons inside the circle show how often two attributes appear together at high levels in the same coffee. The thickness of the ribbons indicates the strength of this co-occurrence, thicker ribbons mean that two attributes are likely to be strong at the same time.
+
+The chord diagram shows that exceptional coffees are characterized by a tightly connected sensory profile, with flavor acting as the central attribute co-occurring with all other attributes. Apart from flavor, the rest of the attributes are also interconnected, showing that exceptional coffees combine several sensory attributes at the same time rather than relying on a single attribute. Aroma shows the fewest connections, suggesting that it plays a more secondary role in defining top-rated coffees.
+
+The main conclusion is that exceptional coffee is not about one outstanding parameter. It is about a balanced set of attributes that together create the best coffee.
